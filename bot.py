@@ -4,6 +4,12 @@ Your personal AI development assistant
 """
 
 import os
+import sys
+
+# Load environment variables from .env file (for local development)
+from dotenv import load_dotenv
+load_dotenv()
+
 import json
 import asyncio
 import logging

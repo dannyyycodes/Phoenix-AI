@@ -1,5 +1,5 @@
 # Telegram Bot
-python-telegram-bot==21.0.1
+python-telegram-bot[all]==21.0.1
 
 # Database
 sqlalchemy==2.0.25
@@ -11,5 +11,8 @@ PyGithub==2.2.0
 # HTTP Requests
 httpx==0.26.0
 
-# Utilities
+# Environment
 python-dotenv==1.0.0
+
+# ASGI/WSGI (for potential webhook mode)
+aiohttp==3.9.1
