@@ -244,29 +244,11 @@ class PhoenixBot:
         await update.message.chat.send_action("typing")
 
         try:
-            # Process with AI brain
-            result = await self.brain.think(user_id, message)
-
-            # Handle tool calls that need approval
-            if result['requires_approval'] and result['approval_request']:
-                await self._request_approval(
-                    update, user_id, result['approval_request'], result['response']
-                )
-                return
-
-            # Execute any auto-approved tool calls
-            if result['tool_calls']:
-                for tool_call in result['tool_calls']:
-                    if not self.brain._requires_approval(tool_call['name']):
-                        tool_result = await self.brain.execute_tool(
-                            tool_call['name'], tool_call['input']
-                        )
-                        # Could append tool results to response if needed
+            # Process with AI brain - now returns final response directly
+            response = await self.brain.think(user_id, message)
 
             # Send response (split if too long)
-            response = result['response']
             if len(response) > 4000:
-                # Split into chunks
                 chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
                 for chunk in chunks:
                     await update.message.reply_text(chunk)
