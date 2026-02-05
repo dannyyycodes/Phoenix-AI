@@ -225,6 +225,112 @@ You can execute real actions using tools. When the user asks you to do something
                     }
                 }
             },
+            # === THEME TOOLS ===
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_themes",
+                    "description": "List all content themes (e.g., Animal Facts, Baby Animals, etc.)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_theme",
+                    "description": "Create a new content theme for video automation",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Theme name (e.g., 'Baby Animals', 'Ocean Life')"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "What this theme is about"
+                            },
+                            "content_focus": {
+                                "type": "string",
+                                "description": "What kind of content/facts to generate (e.g., 'facts about baby and newborn animals')"
+                            },
+                            "visual_style": {
+                                "type": "string",
+                                "description": "Visual style: 'hyper_realistic', 'cute_soft', 'dramatic', 'underwater', 'cinematic'"
+                            },
+                            "schedule_hours": {
+                                "type": "integer",
+                                "description": "Hours between posts (6 = 4 posts/day, 8 = 3 posts/day)"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_theme",
+                    "description": "Run video generation for a specific theme",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "theme_id": {
+                                "type": "string",
+                                "description": "Theme ID (e.g., 'animal_facts', 'baby_animals')"
+                            },
+                            "dry_run": {
+                                "type": "boolean",
+                                "description": "If true, generate but don't post to socials"
+                            },
+                            "subject": {
+                                "type": "string",
+                                "description": "Optional specific subject (e.g., 'baby elephant')"
+                            }
+                        },
+                        "required": ["theme_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_theme_source",
+                    "description": "Change video source for a theme (AI-generated or stock footage)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "theme_id": {
+                                "type": "string",
+                                "description": "Theme ID"
+                            },
+                            "source": {
+                                "type": "string",
+                                "enum": ["sora", "pexels", "manual"],
+                                "description": "Video source: 'sora' (AI), 'pexels' (stock), 'manual' (your URL)"
+                            }
+                        },
+                        "required": ["theme_id", "source"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_theme",
+                    "description": "Delete a content theme",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "theme_id": {"type": "string", "description": "Theme ID to delete"}
+                        },
+                        "required": ["theme_id"]
+                    }
+                }
+            },
             # === GITHUB TOOLS ===
             {
                 "type": "function",
@@ -461,6 +567,31 @@ You can execute real actions using tools. When the user asks you to do something
                     args.get('habitat', ''),
                     args.get('prompt_style', '')
                 )
+
+            # Theme tools
+            elif tool_name == "list_themes":
+                return await self._tool_list_themes()
+            elif tool_name == "create_theme":
+                return await self._tool_create_theme(
+                    args.get('name', ''),
+                    args.get('description', ''),
+                    args.get('content_focus', ''),
+                    args.get('visual_style', 'hyper_realistic'),
+                    args.get('schedule_hours', 6)
+                )
+            elif tool_name == "run_theme":
+                return await self._tool_run_theme(
+                    args.get('theme_id', 'animal_facts'),
+                    args.get('dry_run', False),
+                    args.get('subject')
+                )
+            elif tool_name == "set_theme_source":
+                return await self._tool_set_theme_source(
+                    args.get('theme_id', ''),
+                    args.get('source', 'sora')
+                )
+            elif tool_name == "delete_theme":
+                return await self._tool_delete_theme(args.get('theme_id', ''))
 
             # GitHub tools
             elif tool_name == "read_github_file":
@@ -807,6 +938,168 @@ You can execute real actions using tools. When the user asks you to do something
                     return f"✅ Added: {name}\n\nIt's now in the rotation and may appear in future videos!"
                 else:
                     return f"Failed to add: {r.text[:100]}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    # ==================== THEME TOOLS ====================
+
+    async def _tool_list_themes(self) -> str:
+        """List all content themes"""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"{self.omni_agent_url}/api/themes")
+                data = r.json()
+                themes = data.get('themes', [])
+
+                if not themes:
+                    return "No themes found. Create one with 'create a new theme called [name]'"
+
+                result = "📋 CONTENT THEMES\n\n"
+                for theme in themes:
+                    status = "✅" if theme.get('enabled', True) else "⏸️"
+                    source = theme.get('video_source', 'sora').upper()
+                    schedule = theme.get('schedule_hours', 6)
+
+                    result += f"{status} **{theme['name']}** ({theme['id']})\n"
+                    result += f"   Source: {source} | Schedule: Every {schedule}h\n"
+                    result += f"   Style: {theme.get('visual_style', 'N/A')[:40]}...\n\n"
+
+                return result
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_create_theme(self, name: str, description: str, content_focus: str,
+                                  visual_style: str, schedule_hours: int) -> str:
+        """Create a new content theme"""
+        try:
+            if not name:
+                return "Please provide a theme name"
+
+            # Map visual style shortcuts to full descriptions
+            style_map = {
+                'hyper_realistic': 'hyper-realistic, nature documentary quality, cinematic 4K, detailed textures',
+                'cute_soft': 'soft lighting, gentle colors, cute aesthetic, warm tones, dreamy atmosphere',
+                'dramatic': 'dramatic lighting, cinematic, intense mood, high contrast, epic scale',
+                'underwater': 'underwater photography, blue tones, serene, crystal clear water',
+                'cinematic': 'cinematic quality, professional lighting, film-like color grading'
+            }
+
+            full_style = style_map.get(visual_style, visual_style)
+
+            # Build content prompt if focus provided
+            content_prompt = ""
+            if content_focus:
+                content_prompt = f"Generate ONE fascinating fact about {{animal}} focusing on {content_focus}. Keep it under 100 words. Make it surprising and shareable."
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    f"{self.omni_agent_url}/api/themes",
+                    json={
+                        "name": name,
+                        "description": description or f"Auto-generated {name} content",
+                        "content_prompt": content_prompt,
+                        "visual_style": full_style,
+                        "schedule_hours": schedule_hours,
+                        "video_source": "sora"
+                    }
+                )
+
+                if r.status_code == 200:
+                    data = r.json()
+                    theme = data.get('theme', {})
+                    theme_id = theme.get('id', name.lower().replace(' ', '_'))
+
+                    return (
+                        f"✅ THEME CREATED: {name}\n\n"
+                        f"ID: {theme_id}\n"
+                        f"Style: {visual_style}\n"
+                        f"Schedule: Every {schedule_hours} hours\n"
+                        f"Source: Sora AI\n\n"
+                        f"To run: 'run {theme_id} theme'\n"
+                        f"To use stock footage: 'switch {theme_id} to pexels'"
+                    )
+                else:
+                    return f"Failed to create: {r.text[:100]}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_run_theme(self, theme_id: str, dry_run: bool, subject: str = None) -> str:
+        """Run video generation for a theme"""
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:  # 5 min timeout for video gen
+                payload = {"dry_run": dry_run, "duration": 10}
+                if subject:
+                    payload["subject"] = subject
+
+                r = await client.post(
+                    f"{self.omni_agent_url}/api/themes/{theme_id}/run",
+                    json=payload
+                )
+
+                data = r.json()
+
+                if data.get('status') in ['success', 'dry_run_success']:
+                    video = data.get('video', '')
+                    if video and not dry_run:
+                        self.pending_media = {"url": video, "caption": f"{data.get('subject', '')} - {data.get('theme', '')}"}
+
+                    mode = "DRY RUN" if dry_run else "LIVE"
+                    posted = "Yes - sent to socials!" if data.get('posted') else "No"
+
+                    return (
+                        f"🎬 THEME RUN COMPLETE ({mode})\n\n"
+                        f"Theme: {data.get('theme', theme_id)}\n"
+                        f"Subject: {data.get('subject', 'N/A')}\n"
+                        f"Content: {data.get('content', 'N/A')[:80]}...\n"
+                        f"Posted: {posted}\n"
+                        f"Video: {'Ready' if video else 'N/A'}"
+                    )
+                else:
+                    return f"Failed: {data.get('error', 'Unknown error')}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_set_theme_source(self, theme_id: str, source: str) -> str:
+        """Change video source for a theme"""
+        try:
+            if not theme_id:
+                return "Please specify a theme ID"
+
+            source_names = {
+                'sora': 'Sora AI (generated)',
+                'pexels': 'Pexels (free stock)',
+                'manual': 'Manual (your URL)'
+            }
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    f"{self.omni_agent_url}/api/themes/{theme_id}/source",
+                    json={"source": source}
+                )
+
+                if r.status_code == 200:
+                    return f"✅ {theme_id} now uses: {source_names.get(source, source)}"
+                else:
+                    return f"Failed: {r.text[:100]}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_delete_theme(self, theme_id: str) -> str:
+        """Delete a theme"""
+        try:
+            if not theme_id:
+                return "Please specify a theme ID"
+
+            if theme_id == 'animal_facts':
+                return "Cannot delete the default 'animal_facts' theme"
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.delete(f"{self.omni_agent_url}/api/themes/{theme_id}")
+
+                if r.status_code == 200:
+                    return f"✅ Theme '{theme_id}' deleted"
+                else:
+                    return f"Failed: {r.text[:100]}"
         except Exception as e:
             return f"Error: {e}"
 
