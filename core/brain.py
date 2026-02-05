@@ -154,6 +154,32 @@ You can execute real actions using tools. When the user asks you to do something
             {
                 "type": "function",
                 "function": {
+                    "name": "check_failures",
+                    "description": "Check for any failed or stuck tasks in the last 24 hours",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "cancel_task",
+                    "description": "Cancel a stuck or problematic task",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string", "description": "The task ID to cancel"},
+                            "reason": {"type": "string", "description": "Reason for cancellation"}
+                        },
+                        "required": ["task_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "get_post_history",
                     "description": "Get detailed history of recent posts - what was posted, when, which platforms, success/failure",
                     "parameters": {
@@ -553,6 +579,10 @@ You can execute real actions using tools. When the user asks you to do something
                 return await self._tool_test_overlay(args.get('fact'), args.get('animal'))
             elif tool_name == "get_omni_logs":
                 return await self._tool_get_logs(args.get('limit', 10))
+            elif tool_name == "check_failures":
+                return await self._tool_check_failures()
+            elif tool_name == "cancel_task":
+                return await self._tool_cancel_task(args.get('task_id', ''), args.get('reason', 'Manually cancelled'))
             elif tool_name == "get_post_history":
                 return await self._tool_get_post_history(args.get('limit', 5))
             elif tool_name == "get_project_stats":
@@ -764,6 +794,80 @@ You can execute real actions using tools. When the user asks you to do something
                     time = str(log.get('timestamp', ''))[:16]
                     result += f"- {time} | {animal} | {status}\n"
                 return result
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_check_failures(self) -> str:
+        """Check for failed or stuck tasks"""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                # Get failed tasks
+                failed_r = await client.get(f"{self.omni_agent_url}/api/tasks/failed")
+                failed_data = failed_r.json() if failed_r.status_code == 200 else {}
+                failed_tasks = failed_data.get('failed', [])
+
+                # Get all tasks to check for stuck ones
+                tasks_r = await client.get(f"{self.omni_agent_url}/api/tasks")
+                tasks_data = tasks_r.json() if tasks_r.status_code == 200 else {}
+                all_tasks = tasks_data.get('tasks', [])
+
+                # Find stuck tasks (processing for >10 min)
+                from datetime import datetime, timedelta
+                stuck_tasks = []
+                for task in all_tasks:
+                    if task.get('status') == 'processing':
+                        created = task.get('created_at', '')
+                        if created:
+                            try:
+                                created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                                age_min = (datetime.utcnow().replace(tzinfo=created_dt.tzinfo) - created_dt).total_seconds() / 60
+                                if age_min > 10:
+                                    stuck_tasks.append({
+                                        'task_id': task.get('task_id'),
+                                        'animal': task.get('animal'),
+                                        'age_minutes': int(age_min)
+                                    })
+                            except:
+                                pass
+
+                if not failed_tasks and not stuck_tasks:
+                    return "✅ No failures or stuck tasks! Everything is running smoothly."
+
+                result = "⚠️ ISSUES DETECTED\n\n"
+
+                if stuck_tasks:
+                    result += f"🔄 STUCK TASKS ({len(stuck_tasks)}):\n"
+                    for t in stuck_tasks:
+                        result += f"  - {t['animal']} ({t['task_id'][:8]}...) - stuck for {t['age_minutes']} min\n"
+                    result += "\nSay 'cancel task [ID]' to abort stuck tasks.\n\n"
+
+                if failed_tasks:
+                    result += f"❌ FAILED TASKS ({len(failed_tasks)}):\n"
+                    for t in failed_tasks:
+                        result += f"  - {t.get('animal', '?')}: {t.get('error', 'Unknown')[:50]}\n"
+
+                return result
+        except Exception as e:
+            return f"Error checking failures: {e}"
+
+    async def _tool_cancel_task(self, task_id: str, reason: str) -> str:
+        """Cancel a stuck task"""
+        try:
+            if not task_id:
+                return "Please provide a task ID"
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    f"{self.omni_agent_url}/api/tasks/{task_id}/cancel",
+                    json={"reason": reason}
+                )
+
+                if r.status_code == 200:
+                    return f"✅ Task {task_id[:12]}... cancelled.\nReason: {reason}"
+                elif r.status_code == 404:
+                    return f"Task not found: {task_id}"
+                else:
+                    return f"Failed to cancel: {r.text[:100]}"
         except Exception as e:
             return f"Error: {e}"
 
