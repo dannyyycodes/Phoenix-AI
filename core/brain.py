@@ -123,6 +123,26 @@ You can execute real actions using tools. When the user asks you to do something
                         "required": ["task_id"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "test_overlay",
+                    "description": "Test the video text overlay without generating a new Sora video. Uses a sample video to test the fact text composition.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "fact": {
+                                "type": "string",
+                                "description": "The fact text to overlay (optional, uses default if not provided)"
+                            },
+                            "animal": {
+                                "type": "string",
+                                "description": "The animal name (optional, uses 'Peacock' if not provided)"
+                            }
+                        }
+                    }
+                }
             }
         ]
 
@@ -217,6 +237,11 @@ You can execute real actions using tools. When the user asks you to do something
                 return await self._tool_get_logs(args.get('limit', 10))
             elif tool_name == "check_task":
                 return await self._tool_check_task(args.get('task_id', ''))
+            elif tool_name == "test_overlay":
+                return await self._tool_test_overlay(
+                    args.get('fact'),
+                    args.get('animal')
+                )
             else:
                 return f"Unknown tool: {tool_name}"
         except Exception as e:
@@ -346,3 +371,35 @@ You can execute real actions using tools. When the user asks you to do something
                 return result
         except Exception as e:
             return f"Failed to get logs: {str(e)}"
+
+    async def _tool_test_overlay(self, fact: str = None, animal: str = None) -> str:
+        """Test video text overlay without generating new Sora video"""
+        try:
+            payload = {}
+            if fact:
+                payload['fact'] = fact
+            if animal:
+                payload['animal'] = animal
+
+            async with httpx.AsyncClient(timeout=120) as client:
+                r = await client.post(
+                    f"{self.omni_agent_url}/api/animal-facts/test-overlay",
+                    json=payload
+                )
+                data = r.json()
+
+                if data.get('status') == 'success':
+                    video_url = data.get('video_url', '')
+                    full_url = f"{self.omni_agent_url}{video_url}" if video_url.startswith('/') else video_url
+
+                    msg = "OVERLAY TEST COMPLETE!\n\n"
+                    msg += f"Animal: {data.get('animal', 'Unknown')}\n"
+                    msg += f"Fact: {data.get('fact', 'N/A')[:100]}...\n\n"
+                    msg += f"Preview URL: {full_url}\n\n"
+                    msg += "Open the URL to see if the text overlay looks correct!"
+                    return msg
+                else:
+                    return f"Test failed: {data.get('message', 'Unknown error')}\n\nDetails: {data.get('traceback', 'N/A')[:500]}"
+
+        except Exception as e:
+            return f"Failed to test overlay: {str(e)}"
