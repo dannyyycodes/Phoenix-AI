@@ -106,6 +106,23 @@ You can execute real actions using tools. When the user asks you to do something
                         }
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_task",
+                    "description": "Check the status of a specific video generation task by its ID. Use this to see if a video is ready.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "The task ID to check"
+                            }
+                        },
+                        "required": ["task_id"]
+                    }
+                }
             }
         ]
 
@@ -198,6 +215,8 @@ You can execute real actions using tools. When the user asks you to do something
                 return await self._tool_run_animal_facts(args.get('dry_run', True))
             elif tool_name == "get_omni_logs":
                 return await self._tool_get_logs(args.get('limit', 10))
+            elif tool_name == "check_task":
+                return await self._tool_check_task(args.get('task_id', ''))
             else:
                 return f"Unknown tool: {tool_name}"
         except Exception as e:
@@ -251,7 +270,7 @@ You can execute real actions using tools. When the user asks you to do something
         return "\n".join(results) if results else "Could not check status"
 
     async def _tool_run_animal_facts(self, dry_run: bool = True) -> str:
-        """Trigger animal facts video generation"""
+        """Trigger animal facts video generation and monitor progress"""
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post(
@@ -263,17 +282,48 @@ You can execute real actions using tools. When the user asks you to do something
                 if data.get('status') == 'started':
                     animal = data.get('animal', 'Unknown')
                     task_id = data.get('task_id', '')
-                    msg = f"Video generation STARTED!\n"
+                    fact = data.get('fact', 'N/A')
+
+                    msg = f"Video generation STARTED!\n\n"
                     msg += f"Animal: {animal}\n"
-                    msg += f"Fact: {data.get('fact', 'N/A')[:100]}...\n"
+                    msg += f"Fact: {fact[:150]}...\n\n"
                     msg += f"Task ID: {task_id}\n"
-                    msg += f"Mode: {'DRY RUN (no posting)' if dry_run else 'LIVE (will post to social media)'}\n"
-                    msg += f"Estimated time: 2-5 minutes"
+                    msg += f"Mode: {'DRY RUN (no posting)' if dry_run else 'LIVE (will post)'}\n\n"
+                    msg += f"The video will take 2-5 minutes. Use 'check task {task_id}' or 'check status' to monitor progress."
                     return msg
                 else:
                     return f"Response: {json.dumps(data, indent=2)}"
         except Exception as e:
             return f"Failed to trigger: {str(e)}"
+
+    async def _tool_check_task(self, task_id: str) -> str:
+        """Check status of a specific video generation task"""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"{self.omni_agent_url}/api/tasks/{task_id}")
+                data = r.json()
+
+                status = data.get('status', 'unknown')
+                animal = data.get('animal', 'Unknown')
+                video = data.get('video')
+                error = data.get('error')
+
+                msg = f"Task {task_id[:8]}...\n\n"
+                msg += f"Animal: {animal}\n"
+                msg += f"Status: {status.upper()}\n"
+
+                if status == 'completed' and video:
+                    msg += f"\nVIDEO READY!\nURL: {video}\n"
+                elif status == 'processing':
+                    msg += f"\nStill processing... Check again in 1-2 minutes."
+                elif status == 'pending':
+                    msg += f"\nQueued, waiting to start..."
+                elif status in ['failed', 'dead_letter']:
+                    msg += f"\nFailed: {error or 'Unknown error'}"
+
+                return msg
+        except Exception as e:
+            return f"Failed to check task: {str(e)}"
 
     async def _tool_get_logs(self, limit: int = 10) -> str:
         """Get scheduler logs"""
