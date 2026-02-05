@@ -131,15 +131,28 @@ class MemoryManager:
     """Manages all memory operations"""
 
     def __init__(self, database_url: str = None):
-        self.database_url = database_url or os.environ.get('DATABASE_URL', 'sqlite:///phoenix.db')
+        self.database_url = database_url or os.environ.get('DATABASE_URL', '')
 
-        # Fix Railway postgres URL format
-        if self.database_url.startswith('postgres://'):
+        # Validate and fix database URL
+        if not self.database_url or 'port' in self.database_url or self.database_url == 'sqlite:///phoenix.db':
+            # Invalid or placeholder URL - use SQLite
+            print("Using SQLite database (no valid DATABASE_URL found)")
+            self.database_url = 'sqlite:///phoenix.db'
+        elif self.database_url.startswith('postgres://'):
+            # Fix Railway postgres URL format
             self.database_url = self.database_url.replace('postgres://', 'postgresql://', 1)
 
-        self.engine = create_engine(self.database_url)
-        Base.metadata.create_all(self.engine)
-        self.Session = sessionmaker(bind=self.engine)
+        try:
+            self.engine = create_engine(self.database_url)
+            Base.metadata.create_all(self.engine)
+            self.Session = sessionmaker(bind=self.engine)
+            print(f"Database connected: {self.database_url.split('@')[-1] if '@' in self.database_url else 'sqlite'}")
+        except Exception as e:
+            print(f"Database connection failed: {e}, falling back to SQLite")
+            self.database_url = 'sqlite:///phoenix.db'
+            self.engine = create_engine(self.database_url)
+            Base.metadata.create_all(self.engine)
+            self.Session = sessionmaker(bind=self.engine)
 
     def get_session(self):
         return self.Session()
