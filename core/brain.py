@@ -5,18 +5,19 @@ Claude-powered AI with tool use for code generation, deployments, and more
 
 import os
 import json
-import anthropic
+import httpx
 from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 
 
 class PhoenixBrain:
-    """AI brain powered by Claude with tool use"""
+    """AI brain powered by Claude via OpenRouter with tool use"""
 
     def __init__(self, memory_manager, github_client=None, railway_client=None):
-        self.client = anthropic.Anthropic(
-            api_key=os.environ.get('ANTHROPIC_API_KEY')
-        )
+        self.api_key = os.environ.get('OPENROUTER_API_KEY')
+        self.api_url = "https://openrouter.ai/api/v1/chat/completions"
+        self.model = "anthropic/claude-sonnet-4"  # Best balance of speed/capability
+
         self.memory = memory_manager
         self.github = github_client
         self.railway = railway_client
@@ -326,14 +327,24 @@ Current date/time: """ + datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         # Store user message
         self.memory.add_message(user_id, "user", message, self.active_project_id)
 
-        # Call Claude
-        response = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
-            system=system,
-            tools=self.tools,
-            messages=messages
-        )
+        # Call Claude via OpenRouter
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                self.api_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://phoenix-ai.railway.app",
+                    "X-Title": "Phoenix AI"
+                },
+                json={
+                    "model": self.model,
+                    "max_tokens": 4096,
+                    "messages": [{"role": "system", "content": system}] + messages,
+                    "tools": self._convert_tools_for_openrouter(),
+                }
+            )
+            data = response.json()
 
         # Process response
         result = {
@@ -343,22 +354,39 @@ Current date/time: """ + datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
             'approval_request': None
         }
 
-        for block in response.content:
-            if block.type == "text":
-                result['response'] += block.text
-            elif block.type == "tool_use":
+        if 'error' in data:
+            result['response'] = f"AI Error: {data['error'].get('message', 'Unknown error')}"
+            return result
+
+        choice = data.get('choices', [{}])[0]
+        message_content = choice.get('message', {})
+
+        # Extract text response
+        if message_content.get('content'):
+            result['response'] = message_content['content']
+
+        # Extract tool calls
+        if message_content.get('tool_calls'):
+            for tool_call in message_content['tool_calls']:
+                func = tool_call.get('function', {})
+                tool_name = func.get('name', '')
+                try:
+                    tool_input = json.loads(func.get('arguments', '{}'))
+                except:
+                    tool_input = {}
+
                 result['tool_calls'].append({
-                    'id': block.id,
-                    'name': block.name,
-                    'input': block.input
+                    'id': tool_call.get('id', ''),
+                    'name': tool_name,
+                    'input': tool_input
                 })
 
                 # Check if this tool requires approval
-                if self._requires_approval(block.name):
+                if self._requires_approval(tool_name):
                     result['requires_approval'] = True
                     result['approval_request'] = {
-                        'tool': block.name,
-                        'input': block.input
+                        'tool': tool_name,
+                        'input': tool_input
                     }
 
         # Store assistant response
@@ -369,6 +397,20 @@ Current date/time: """ + datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         )
 
         return result
+
+    def _convert_tools_for_openrouter(self) -> List[Dict]:
+        """Convert Anthropic-style tools to OpenRouter/OpenAI format"""
+        openrouter_tools = []
+        for tool in self.tools:
+            openrouter_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"]
+                }
+            })
+        return openrouter_tools
 
     def _requires_approval(self, tool_name: str) -> bool:
         """Check if a tool requires user approval"""
