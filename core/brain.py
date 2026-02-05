@@ -151,6 +151,80 @@ You can execute real actions using tools. When the user asks you to do something
                     }
                 }
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_post_history",
+                    "description": "Get detailed history of recent posts - what was posted, when, which platforms, success/failure",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {"type": "integer", "description": "Number of posts to show (default 5)"}
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_project_stats",
+                    "description": "Get comprehensive stats: total posts, success rate, uptime, next scheduled run",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "update_schedule",
+                    "description": "Change the posting schedule (how often videos are posted)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "interval_hours": {
+                                "type": "integer",
+                                "description": "Hours between posts (e.g., 6 = every 6 hours = 4 posts/day)"
+                            }
+                        },
+                        "required": ["interval_hours"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "toggle_scheduler",
+                    "description": "Pause or resume the automatic posting schedule",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "enabled": {
+                                "type": "boolean",
+                                "description": "True to enable/resume, False to pause"
+                            }
+                        },
+                        "required": ["enabled"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "add_animal",
+                    "description": "Add a new animal to the content rotation",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Animal name (e.g., 'Snow Leopard')"},
+                            "habitat": {"type": "string", "description": "Where it lives (e.g., 'Himalayan Mountains')"},
+                            "prompt_style": {"type": "string", "description": "Visual description for video (e.g., 'prowling through snow')"}
+                        },
+                        "required": ["name"]
+                    }
+                }
+            },
             # === GITHUB TOOLS ===
             {
                 "type": "function",
@@ -373,6 +447,20 @@ You can execute real actions using tools. When the user asks you to do something
                 return await self._tool_test_overlay(args.get('fact'), args.get('animal'))
             elif tool_name == "get_omni_logs":
                 return await self._tool_get_logs(args.get('limit', 10))
+            elif tool_name == "get_post_history":
+                return await self._tool_get_post_history(args.get('limit', 5))
+            elif tool_name == "get_project_stats":
+                return await self._tool_get_project_stats()
+            elif tool_name == "update_schedule":
+                return await self._tool_update_schedule(args.get('interval_hours', 6))
+            elif tool_name == "toggle_scheduler":
+                return await self._tool_toggle_scheduler(args.get('enabled', True))
+            elif tool_name == "add_animal":
+                return await self._tool_add_animal(
+                    args.get('name', ''),
+                    args.get('habitat', ''),
+                    args.get('prompt_style', '')
+                )
 
             # GitHub tools
             elif tool_name == "read_github_file":
@@ -545,6 +633,180 @@ You can execute real actions using tools. When the user asks you to do something
                     time = str(log.get('timestamp', ''))[:16]
                     result += f"- {time} | {animal} | {status}\n"
                 return result
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_get_post_history(self, limit: int = 5) -> str:
+        """Get detailed post history"""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                # Get tasks (which are posts)
+                r = await client.get(f"{self.omni_agent_url}/api/tasks")
+                data = r.json()
+                tasks = data.get('tasks', []) if isinstance(data, dict) else data
+
+                if not tasks:
+                    return "No posts yet."
+
+                # Sort by created_at descending and take limit
+                tasks = sorted(tasks, key=lambda x: x.get('created_at', ''), reverse=True)[:limit]
+
+                result = f"Last {len(tasks)} posts:\n\n"
+                for i, task in enumerate(tasks, 1):
+                    animal = task.get('animal', 'Unknown')
+                    status = task.get('status', '?')
+                    created = str(task.get('created_at', ''))[:16]
+
+                    status_icon = {
+                        'completed': '✅',
+                        'processing': '⏳',
+                        'pending': '🕐',
+                        'failed': '❌',
+                        'dead_letter': '💀'
+                    }.get(status, '❓')
+
+                    result += f"{i}. {status_icon} {animal}\n"
+                    result += f"   {created} | {status}\n"
+
+                    if task.get('video'):
+                        result += f"   Video: Ready\n"
+                    if task.get('posted'):
+                        result += f"   Posted to: IG, TikTok, YT\n"
+                    result += "\n"
+
+                return result
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_get_project_stats(self) -> str:
+        """Get comprehensive project statistics"""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                # Get multiple endpoints
+                health_r = await client.get(f"{self.omni_agent_url}/health")
+                tasks_r = await client.get(f"{self.omni_agent_url}/api/tasks")
+                schedule_r = await client.get(f"{self.omni_agent_url}/api/scheduler/schedules")
+                admin_r = await client.get(f"{self.omni_agent_url}/api/admin/status")
+
+                health = health_r.json() if health_r.status_code == 200 else {}
+                tasks_data = tasks_r.json() if tasks_r.status_code == 200 else {}
+                schedule_data = schedule_r.json() if schedule_r.status_code == 200 else {}
+                admin_data = admin_r.json() if admin_r.status_code == 200 else {}
+
+                tasks = tasks_data.get('tasks', []) if isinstance(tasks_data, dict) else []
+                schedules = schedule_data.get('schedules', [])
+
+                # Calculate stats
+                total = len(tasks)
+                completed = len([t for t in tasks if t.get('status') == 'completed'])
+                failed = len([t for t in tasks if t.get('status') in ['failed', 'dead_letter']])
+                success_rate = (completed / total * 100) if total > 0 else 0
+
+                # Schedule info
+                schedule_info = "Not configured"
+                if schedules:
+                    s = schedules[0]
+                    interval = s.get('interval_hours', '?')
+                    enabled = '✅ Active' if s.get('enabled') else '⏸️ Paused'
+                    schedule_info = f"Every {interval}h ({enabled})"
+
+                result = f"""📊 PROJECT STATS
+
+🟢 Status: {health.get('status', 'Unknown').upper()}
+📅 Schedule: {schedule_info}
+
+📈 Posts:
+   Total: {total}
+   Successful: {completed}
+   Failed: {failed}
+   Success Rate: {success_rate:.0f}%
+
+🐾 Animals: {admin_data.get('animal_count', '?')} in rotation
+🎬 Last Video: {admin_data.get('last_video', 'None')[:30] if admin_data.get('last_video') else 'None'}
+⏰ Last Run: {str(admin_data.get('last_run', 'Never'))[:16]}
+"""
+                return result
+        except Exception as e:
+            return f"Error getting stats: {e}"
+
+    async def _tool_update_schedule(self, interval_hours: int) -> str:
+        """Update posting schedule"""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                # Get current schedule ID
+                r = await client.get(f"{self.omni_agent_url}/api/scheduler/schedules")
+                schedules = r.json().get('schedules', [])
+
+                if not schedules:
+                    return "No schedule found to update"
+
+                schedule_id = schedules[0].get('id', 'animal_facts_auto')
+                posts_per_day = 24 // interval_hours
+
+                # Update schedule
+                r = await client.post(
+                    f"{self.omni_agent_url}/api/scheduler/schedules",
+                    json={
+                        "id": schedule_id,
+                        "interval_hours": interval_hours,
+                        "posts_per_day": posts_per_day
+                    }
+                )
+
+                if r.status_code == 200:
+                    return f"✅ Schedule updated!\n\nNew: Every {interval_hours} hours ({posts_per_day} posts/day)"
+                else:
+                    return f"Failed to update: {r.text[:100]}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_toggle_scheduler(self, enabled: bool) -> str:
+        """Pause or resume scheduler"""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"{self.omni_agent_url}/api/scheduler/schedules")
+                schedules = r.json().get('schedules', [])
+
+                if not schedules:
+                    return "No schedule found"
+
+                schedule_id = schedules[0].get('id', 'animal_facts_auto')
+
+                r = await client.post(
+                    f"{self.omni_agent_url}/api/scheduler/schedules/{schedule_id}/toggle"
+                )
+
+                if r.status_code == 200:
+                    status = "▶️ RESUMED" if enabled else "⏸️ PAUSED"
+                    return f"Scheduler {status}\n\nAutomatic posting is now {'active' if enabled else 'paused'}."
+                else:
+                    return f"Failed: {r.text[:100]}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_add_animal(self, name: str, habitat: str = '', prompt_style: str = '') -> str:
+        """Add a new animal to the rotation"""
+        try:
+            if not name:
+                return "Please provide an animal name"
+
+            animal_id = name.lower().replace(' ', '_')
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    f"{self.omni_agent_url}/api/admin/animals",
+                    json={
+                        "id": animal_id,
+                        "name": name,
+                        "habitat": habitat or "Natural habitat",
+                        "prompt_style": prompt_style or "in its natural environment"
+                    }
+                )
+
+                if r.status_code == 200:
+                    return f"✅ Added: {name}\n\nIt's now in the rotation and may appear in future videos!"
+                else:
+                    return f"Failed to add: {r.text[:100]}"
         except Exception as e:
             return f"Error: {e}"
 
