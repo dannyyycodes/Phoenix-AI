@@ -1,17 +1,18 @@
 """
 Phoenix AI Brain
-Claude-powered AI with tool use for code generation, deployments, and more
+Claude-powered AI with full development capabilities
 """
 
 import os
 import json
 import httpx
+import base64
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 
 class PhoenixBrain:
-    """AI brain powered by Claude via OpenRouter with tool use"""
+    """AI brain powered by Claude via OpenRouter with extensive tool use"""
 
     def __init__(self, memory_manager, github_client=None, railway_client=None):
         self.api_key = os.environ.get('OPENROUTER_API_KEY')
@@ -25,50 +26,68 @@ class PhoenixBrain:
 
         # Known projects context
         self.omni_agent_url = "https://web-production-770b9.up.railway.app"
+        self.github_owner = os.environ.get('GITHUB_DEFAULT_OWNER', 'dannyyycodes')
+        self.github_token = os.environ.get('GITHUB_TOKEN', '')
+
+        # For returning media to send
+        self.pending_media = None
 
     def _get_system_prompt(self) -> str:
-        return f"""You are Phoenix AI, a personal development assistant on Telegram.
+        return f"""You are Phoenix AI, a powerful personal development assistant on Telegram.
 
 ## YOUR CAPABILITIES
-You can execute real actions using tools. When the user asks you to do something, USE THE TOOLS to actually do it.
+You can execute real actions using tools. When the user asks you to do something, USE THE TOOLS.
 
 ## KNOWN PROJECTS
-1. **Omni-Agent (Animal Facts Automation)**
-   - URL: {self.omni_agent_url}
-   - Purpose: Generates animal facts videos using Sora 2 via Kie.ai
-   - Features: Auto-posts to TikTok, Instagram, YouTube Shorts
-   - Schedule: Every 6 hours (4 posts per day)
-   - Endpoints:
-     - /health - Check if running
-     - /api/animal-facts/preview - Generate preview without posting
-     - /api/animal-facts/run - Generate and post video
-     - /api/tasks - View pending video tasks
-     - /api/scheduler/logs - View recent runs
 
-## IMPORTANT BEHAVIOR
-1. When asked about animal facts or Omni-Agent, USE the check_omni_agent tool
-2. When asked to run/trigger the automation, USE the run_animal_facts tool
-3. ALWAYS execute tools when the user asks you to DO something
-4. After getting tool results, summarize them clearly for the user
-5. Be concise - user is on mobile
+### 1. Omni-Agent (Animal Facts Automation)
+- URL: {self.omni_agent_url}
+- GitHub: {self.github_owner}/Omni-Agent
+- Purpose: Generates animal facts videos using Sora 2 via Kie.ai
+- Features: Auto-posts to TikTok, Instagram, YouTube Shorts
+- Schedule: Every 6 hours (4 posts per day)
+- Key files:
+  - workflows/animal_facts.py - Main workflow logic
+  - utils/video_composer.py - Text overlay composition
+  - app.py - Flask API endpoints
+  - core/scheduler.py - Scheduling system
+
+### 2. Phoenix-AI (This Bot)
+- GitHub: {self.github_owner}/Phoenix-AI
+- Purpose: Telegram bot for managing projects from phone
+- Key files:
+  - bot.py - Telegram handler
+  - core/brain.py - AI logic (this file)
+  - core/memory.py - Database/memory
+
+## IMPORTANT BEHAVIORS
+1. When asked to READ a file: Use read_github_file tool
+2. When asked to EDIT/CHANGE code: Use edit_github_file tool (requires approval)
+3. When asked about LOGS: Use get_railway_logs tool
+4. When asked to SEND/SHOW a video: Use send_video tool
+5. When asked about animal facts/status: Use check_omni_agent tool
+6. ALWAYS execute tools when user asks you to DO something
+7. Be concise - user is on mobile
+8. After code changes, remind user it will auto-deploy
 
 ## Current Time: {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}"""
 
     def _get_tools(self) -> List[Dict]:
-        """Tools in OpenAI format for OpenRouter"""
+        """All available tools"""
         return [
+            # === OMNI-AGENT TOOLS ===
             {
                 "type": "function",
                 "function": {
                     "name": "check_omni_agent",
-                    "description": "Check status of the Omni-Agent animal facts automation. Use this when user asks about animal facts, video status, or the automation.",
+                    "description": "Check status of the Omni-Agent animal facts automation",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "check_type": {
                                 "type": "string",
                                 "enum": ["health", "tasks", "scheduler", "all"],
-                                "description": "What to check: health (is it running), tasks (pending videos), scheduler (recent runs), all (everything)"
+                                "description": "What to check"
                             }
                         },
                         "required": ["check_type"]
@@ -79,29 +98,13 @@ You can execute real actions using tools. When the user asks you to do something
                 "type": "function",
                 "function": {
                     "name": "run_animal_facts",
-                    "description": "Trigger a new animal facts video generation. Use when user wants to create/run/test the animal facts automation.",
+                    "description": "Trigger a new animal facts video generation",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "dry_run": {
                                 "type": "boolean",
-                                "description": "If true, generates video but doesn't post to social media. Default true for safety."
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_omni_logs",
-                    "description": "Get recent scheduler logs showing what videos were generated",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "limit": {
-                                "type": "integer",
-                                "description": "Number of log entries to fetch (default 10)"
+                                "description": "If true, generates video but doesn't post. Default true."
                             }
                         }
                     }
@@ -111,14 +114,11 @@ You can execute real actions using tools. When the user asks you to do something
                 "type": "function",
                 "function": {
                     "name": "check_task",
-                    "description": "Check the status of a specific video generation task by its ID. Use this to see if a video is ready.",
+                    "description": "Check status of a specific video task by ID",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "task_id": {
-                                "type": "string",
-                                "description": "The task ID to check"
-                            }
+                            "task_id": {"type": "string", "description": "The task ID"}
                         },
                         "required": ["task_id"]
                     }
@@ -128,29 +128,166 @@ You can execute real actions using tools. When the user asks you to do something
                 "type": "function",
                 "function": {
                     "name": "test_overlay",
-                    "description": "Test the video text overlay without generating a new Sora video. Uses a sample video to test the fact text composition.",
+                    "description": "Test video text overlay without using Sora API credits",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "fact": {
-                                "type": "string",
-                                "description": "The fact text to overlay (optional, uses default if not provided)"
-                            },
-                            "animal": {
-                                "type": "string",
-                                "description": "The animal name (optional, uses 'Peacock' if not provided)"
-                            }
+                            "fact": {"type": "string", "description": "Fact text to overlay"},
+                            "animal": {"type": "string", "description": "Animal name"}
                         }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_omni_logs",
+                    "description": "Get recent scheduler/run logs from Omni-Agent",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {"type": "integer", "description": "Number of entries (default 10)"}
+                        }
+                    }
+                }
+            },
+            # === GITHUB TOOLS ===
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_github_file",
+                    "description": "Read a file from a GitHub repository. Use this when user wants to see/view code.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "repo": {
+                                "type": "string",
+                                "description": "Repository name (e.g., 'Omni-Agent' or 'Phoenix-AI')"
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "File path (e.g., 'utils/video_composer.py')"
+                            }
+                        },
+                        "required": ["repo", "path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "edit_github_file",
+                    "description": "Edit a file in GitHub. REQUIRES USER APPROVAL. Use when user wants to change/update/modify code.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "repo": {
+                                "type": "string",
+                                "description": "Repository name"
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "File path to edit"
+                            },
+                            "find_text": {
+                                "type": "string",
+                                "description": "Text to find and replace"
+                            },
+                            "replace_text": {
+                                "type": "string",
+                                "description": "New text to replace with"
+                            },
+                            "commit_message": {
+                                "type": "string",
+                                "description": "Commit message describing the change"
+                            }
+                        },
+                        "required": ["repo", "path", "find_text", "replace_text", "commit_message"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_github_files",
+                    "description": "List files in a GitHub repository directory",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "repo": {"type": "string", "description": "Repository name"},
+                            "path": {"type": "string", "description": "Directory path (default: root)"}
+                        },
+                        "required": ["repo"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_github_code",
+                    "description": "Search for text/code in a repository",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "repo": {"type": "string", "description": "Repository name"},
+                            "query": {"type": "string", "description": "Search query"}
+                        },
+                        "required": ["repo", "query"]
+                    }
+                }
+            },
+            # === RAILWAY TOOLS ===
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_railway_logs",
+                    "description": "Get recent deployment logs from Railway",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "project": {
+                                "type": "string",
+                                "enum": ["omni-agent", "phoenix-ai"],
+                                "description": "Which project's logs to get"
+                            },
+                            "lines": {"type": "integer", "description": "Number of lines (default 50)"}
+                        },
+                        "required": ["project"]
+                    }
+                }
+            },
+            # === MEDIA TOOLS ===
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_video",
+                    "description": "Send a video file directly in the Telegram chat. Use when user wants to see/preview a video.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "video_url": {
+                                "type": "string",
+                                "description": "URL of the video to send"
+                            },
+                            "caption": {
+                                "type": "string",
+                                "description": "Caption for the video"
+                            }
+                        },
+                        "required": ["video_url"]
                     }
                 }
             }
         ]
 
-    async def think(self, user_id: str, user_message: str) -> str:
+    async def think(self, user_id: str, user_message: str) -> Dict:
         """
         Process user message with full agentic loop.
-        Returns the final response to send to user.
+        Returns dict with 'response' and optionally 'video' to send.
         """
+        # Reset pending media
+        self.pending_media = None
+
         # Build conversation with context
         messages = self.memory.get_conversation_for_context(user_id, max_tokens=10000)
         messages.append({"role": "user", "content": user_message})
@@ -158,25 +295,20 @@ You can execute real actions using tools. When the user asks you to do something
         # Store user message
         self.memory.add_message(user_id, "user", user_message)
 
-        # Agentic loop - keep going until we get a final response
+        # Agentic loop
         max_iterations = 5
         for i in range(max_iterations):
-            # Call Claude
             response = await self._call_claude(messages)
 
             if 'error' in response:
-                return f"Error: {response['error']}"
+                return {"response": f"Error: {response['error']}"}
 
             assistant_message = response.get('choices', [{}])[0].get('message', {})
-
-            # Check for tool calls
             tool_calls = assistant_message.get('tool_calls', [])
 
             if tool_calls:
-                # Add assistant message with tool calls to conversation
                 messages.append(assistant_message)
 
-                # Execute each tool and add results
                 for tool_call in tool_calls:
                     func = tool_call.get('function', {})
                     tool_name = func.get('name', '')
@@ -186,22 +318,23 @@ You can execute real actions using tools. When the user asks you to do something
                     except:
                         args = {}
 
-                    # Execute the tool
                     tool_result = await self._execute_tool(tool_name, args)
 
-                    # Add tool result to messages
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.get('id', ''),
                         "content": tool_result
                     })
             else:
-                # No tool calls - we have the final response
-                final_response = assistant_message.get('content', 'I processed your request.')
+                final_response = assistant_message.get('content', 'Done.')
                 self.memory.add_message(user_id, "assistant", final_response)
-                return final_response
 
-        return "I'm having trouble completing this request. Please try again."
+                result = {"response": final_response}
+                if self.pending_media:
+                    result["video"] = self.pending_media
+                return result
+
+        return {"response": "Request took too many steps. Please try again."}
 
     async def _call_claude(self, messages: List[Dict]) -> Dict:
         """Make API call to Claude via OpenRouter"""
@@ -217,7 +350,7 @@ You can execute real actions using tools. When the user asks you to do something
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 2048,
+                        "max_tokens": 4096,
                         "messages": [{"role": "system", "content": self._get_system_prompt()}] + messages,
                         "tools": self._get_tools(),
                     }
@@ -227,30 +360,53 @@ You can execute real actions using tools. When the user asks you to do something
             return {"error": str(e)}
 
     async def _execute_tool(self, tool_name: str, args: Dict) -> str:
-        """Execute a tool and return result as string"""
+        """Execute a tool and return result"""
         try:
+            # Omni-Agent tools
             if tool_name == "check_omni_agent":
                 return await self._tool_check_omni(args.get('check_type', 'all'))
             elif tool_name == "run_animal_facts":
                 return await self._tool_run_animal_facts(args.get('dry_run', True))
-            elif tool_name == "get_omni_logs":
-                return await self._tool_get_logs(args.get('limit', 10))
             elif tool_name == "check_task":
                 return await self._tool_check_task(args.get('task_id', ''))
             elif tool_name == "test_overlay":
-                return await self._tool_test_overlay(
-                    args.get('fact'),
-                    args.get('animal')
+                return await self._tool_test_overlay(args.get('fact'), args.get('animal'))
+            elif tool_name == "get_omni_logs":
+                return await self._tool_get_logs(args.get('limit', 10))
+
+            # GitHub tools
+            elif tool_name == "read_github_file":
+                return await self._tool_read_file(args.get('repo', ''), args.get('path', ''))
+            elif tool_name == "edit_github_file":
+                return await self._tool_edit_file(
+                    args.get('repo', ''),
+                    args.get('path', ''),
+                    args.get('find_text', ''),
+                    args.get('replace_text', ''),
+                    args.get('commit_message', 'Update via Phoenix AI')
                 )
+            elif tool_name == "list_github_files":
+                return await self._tool_list_files(args.get('repo', ''), args.get('path', ''))
+            elif tool_name == "search_github_code":
+                return await self._tool_search_code(args.get('repo', ''), args.get('query', ''))
+
+            # Railway tools
+            elif tool_name == "get_railway_logs":
+                return await self._tool_railway_logs(args.get('project', 'omni-agent'), args.get('lines', 50))
+
+            # Media tools
+            elif tool_name == "send_video":
+                return await self._tool_send_video(args.get('video_url', ''), args.get('caption', ''))
+
             else:
                 return f"Unknown tool: {tool_name}"
         except Exception as e:
             return f"Tool error: {str(e)}"
 
-    async def _tool_check_omni(self, check_type: str) -> str:
-        """Check Omni-Agent status"""
-        results = []
+    # ==================== OMNI-AGENT TOOLS ====================
 
+    async def _tool_check_omni(self, check_type: str) -> str:
+        results = []
         async with httpx.AsyncClient(timeout=15) as client:
             if check_type in ['health', 'all']:
                 try:
@@ -264,14 +420,13 @@ You can execute real actions using tools. When the user asks you to do something
                 try:
                     r = await client.get(f"{self.omni_agent_url}/api/tasks")
                     tasks = r.json()
-                    if isinstance(tasks, list):
-                        pending = len([t for t in tasks if t.get('status') == 'pending'])
-                        processing = len([t for t in tasks if t.get('status') == 'processing'])
-                        completed = len([t for t in tasks if t.get('status') == 'completed'])
-                        failed = len([t for t in tasks if t.get('status') in ['failed', 'dead_letter']])
-                        results.append(f"Tasks: {pending} pending, {processing} processing, {completed} completed, {failed} failed")
-                    else:
-                        results.append(f"Tasks: {tasks}")
+                    if isinstance(tasks, dict):
+                        tasks = tasks.get('tasks', [])
+                    pending = len([t for t in tasks if t.get('status') == 'pending'])
+                    processing = len([t for t in tasks if t.get('status') == 'processing'])
+                    completed = len([t for t in tasks if t.get('status') == 'completed'])
+                    failed = len([t for t in tasks if t.get('status') in ['failed', 'dead_letter']])
+                    results.append(f"Tasks: {pending} pending, {processing} processing, {completed} completed, {failed} failed")
                 except Exception as e:
                     results.append(f"Tasks: ERROR - {e}")
 
@@ -283,19 +438,15 @@ You can execute real actions using tools. When the user asks you to do something
                     if logs:
                         results.append("Recent runs:")
                         for log in logs[:3]:
-                            animal = log.get('animal', 'Unknown')
-                            status = log.get('status', 'unknown')
-                            time = log.get('timestamp', '')[:16] if log.get('timestamp') else ''
-                            results.append(f"  - {animal}: {status} ({time})")
-                    else:
-                        results.append("Scheduler: No recent runs")
+                            animal = log.get('animal', '?')
+                            status = log.get('status', '?')
+                            results.append(f"  - {animal}: {status}")
                 except Exception as e:
                     results.append(f"Scheduler: ERROR - {e}")
 
         return "\n".join(results) if results else "Could not check status"
 
     async def _tool_run_animal_facts(self, dry_run: bool = True) -> str:
-        """Trigger animal facts video generation and monitor progress"""
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post(
@@ -305,75 +456,44 @@ You can execute real actions using tools. When the user asks you to do something
                 data = r.json()
 
                 if data.get('status') == 'started':
-                    animal = data.get('animal', 'Unknown')
-                    task_id = data.get('task_id', '')
-                    fact = data.get('fact', 'N/A')
-
-                    msg = f"Video generation STARTED!\n\n"
-                    msg += f"Animal: {animal}\n"
-                    msg += f"Fact: {fact[:150]}...\n\n"
-                    msg += f"Task ID: {task_id}\n"
-                    msg += f"Mode: {'DRY RUN (no posting)' if dry_run else 'LIVE (will post)'}\n\n"
-                    msg += f"The video will take 2-5 minutes. Use 'check task {task_id}' or 'check status' to monitor progress."
-                    return msg
-                else:
-                    return f"Response: {json.dumps(data, indent=2)}"
+                    return (
+                        f"Video generation STARTED!\n\n"
+                        f"Animal: {data.get('animal', '?')}\n"
+                        f"Fact: {data.get('fact', 'N/A')[:100]}...\n"
+                        f"Task ID: {data.get('task_id', '')}\n"
+                        f"Mode: {'DRY RUN' if dry_run else 'LIVE'}\n\n"
+                        f"Takes 2-5 min. Say 'check task [ID]' to monitor."
+                    )
+                return f"Response: {json.dumps(data)}"
         except Exception as e:
-            return f"Failed to trigger: {str(e)}"
+            return f"Failed: {e}"
 
     async def _tool_check_task(self, task_id: str) -> str:
-        """Check status of a specific video generation task"""
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 r = await client.get(f"{self.omni_agent_url}/api/tasks/{task_id}")
                 data = r.json()
 
                 status = data.get('status', 'unknown')
-                animal = data.get('animal', 'Unknown')
+                animal = data.get('animal', '?')
                 video = data.get('video')
-                error = data.get('error')
 
-                msg = f"Task {task_id[:8]}...\n\n"
-                msg += f"Animal: {animal}\n"
-                msg += f"Status: {status.upper()}\n"
+                msg = f"Task: {task_id[:12]}...\nAnimal: {animal}\nStatus: {status.upper()}\n"
 
                 if status == 'completed' and video:
-                    msg += f"\nVIDEO READY!\nURL: {video}\n"
+                    msg += f"\nVIDEO READY!\nURL: {video}"
+                    # Auto-queue video for sending
+                    self.pending_media = {"url": video, "caption": f"{animal} Facts"}
                 elif status == 'processing':
-                    msg += f"\nStill processing... Check again in 1-2 minutes."
-                elif status == 'pending':
-                    msg += f"\nQueued, waiting to start..."
+                    msg += "\nStill processing... check again in 1-2 min"
                 elif status in ['failed', 'dead_letter']:
-                    msg += f"\nFailed: {error or 'Unknown error'}"
+                    msg += f"\nFailed: {data.get('error', 'Unknown')}"
 
                 return msg
         except Exception as e:
-            return f"Failed to check task: {str(e)}"
-
-    async def _tool_get_logs(self, limit: int = 10) -> str:
-        """Get scheduler logs"""
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                r = await client.get(f"{self.omni_agent_url}/api/scheduler/logs?limit={limit}")
-                data = r.json()
-                logs = data.get('logs', data) if isinstance(data, dict) else data
-
-                if not logs:
-                    return "No scheduler logs found"
-
-                result = f"Last {len(logs)} runs:\n"
-                for log in logs:
-                    animal = log.get('animal', 'Unknown')
-                    status = log.get('status', 'unknown')
-                    time = log.get('timestamp', '')[:16] if log.get('timestamp') else ''
-                    video = "Yes" if log.get('video') else "No"
-                    result += f"- {time} | {animal} | {status} | Video: {video}\n"
-                return result
-        except Exception as e:
-            return f"Failed to get logs: {str(e)}"
+            return f"Error: {e}"
 
     async def _tool_test_overlay(self, fact: str = None, animal: str = None) -> str:
-        """Test video text overlay without generating new Sora video"""
         try:
             payload = {}
             if fact:
@@ -389,17 +509,252 @@ You can execute real actions using tools. When the user asks you to do something
                 data = r.json()
 
                 if data.get('status') == 'success':
-                    video_url = data.get('video_url', '')
-                    full_url = f"{self.omni_agent_url}{video_url}" if video_url.startswith('/') else video_url
+                    video_path = data.get('video_url', '')
+                    full_url = f"{self.omni_agent_url}{video_path}"
 
-                    msg = "OVERLAY TEST COMPLETE!\n\n"
-                    msg += f"Animal: {data.get('animal', 'Unknown')}\n"
-                    msg += f"Fact: {data.get('fact', 'N/A')[:100]}...\n\n"
-                    msg += f"Preview URL: {full_url}\n\n"
-                    msg += "Open the URL to see if the text overlay looks correct!"
-                    return msg
-                else:
-                    return f"Test failed: {data.get('message', 'Unknown error')}\n\nDetails: {data.get('traceback', 'N/A')[:500]}"
+                    # Queue video for sending
+                    self.pending_media = {
+                        "url": full_url,
+                        "caption": f"Overlay Test: {data.get('animal', 'Test')}"
+                    }
+
+                    return (
+                        f"OVERLAY TEST COMPLETE!\n\n"
+                        f"Animal: {data.get('animal')}\n"
+                        f"Fact: {data.get('fact', '')[:80]}...\n\n"
+                        f"Sending video preview..."
+                    )
+                return f"Failed: {data.get('message', 'Unknown')}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_get_logs(self, limit: int = 10) -> str:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"{self.omni_agent_url}/api/scheduler/logs?limit={limit}")
+                data = r.json()
+                logs = data.get('logs', data) if isinstance(data, dict) else data
+
+                if not logs:
+                    return "No logs found"
+
+                result = f"Last {len(logs)} runs:\n"
+                for log in logs:
+                    animal = log.get('animal', '?')
+                    status = log.get('status', '?')
+                    time = str(log.get('timestamp', ''))[:16]
+                    result += f"- {time} | {animal} | {status}\n"
+                return result
+        except Exception as e:
+            return f"Error: {e}"
+
+    # ==================== GITHUB TOOLS ====================
+
+    async def _tool_read_file(self, repo: str, path: str) -> str:
+        """Read file from GitHub"""
+        try:
+            full_repo = f"{self.github_owner}/{repo}" if '/' not in repo else repo
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(
+                    f"https://api.github.com/repos/{full_repo}/contents/{path}",
+                    headers={
+                        "Authorization": f"token {self.github_token}",
+                        "Accept": "application/vnd.github.v3+json"
+                    }
+                )
+
+                if r.status_code == 404:
+                    return f"File not found: {path}"
+
+                data = r.json()
+
+                if data.get('type') == 'dir':
+                    files = [f"{f['name']}{'/' if f['type'] == 'dir' else ''}" for f in data]
+                    return f"Directory {path}:\n" + "\n".join(files)
+
+                content = base64.b64decode(data.get('content', '')).decode('utf-8')
+
+                # Truncate if too long
+                if len(content) > 3000:
+                    content = content[:3000] + "\n\n... [truncated, file is longer]"
+
+                return f"File: {path}\n\n```\n{content}\n```"
 
         except Exception as e:
-            return f"Failed to test overlay: {str(e)}"
+            return f"Error reading file: {e}"
+
+    async def _tool_edit_file(self, repo: str, path: str, find_text: str,
+                             replace_text: str, commit_message: str) -> str:
+        """Edit file in GitHub"""
+        try:
+            full_repo = f"{self.github_owner}/{repo}" if '/' not in repo else repo
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                # Get current file
+                r = await client.get(
+                    f"https://api.github.com/repos/{full_repo}/contents/{path}",
+                    headers={
+                        "Authorization": f"token {self.github_token}",
+                        "Accept": "application/vnd.github.v3+json"
+                    }
+                )
+
+                if r.status_code != 200:
+                    return f"Could not read file: {r.status_code}"
+
+                data = r.json()
+                sha = data.get('sha')
+                current_content = base64.b64decode(data.get('content', '')).decode('utf-8')
+
+                # Check if find_text exists
+                if find_text not in current_content:
+                    return f"Could not find text to replace:\n```\n{find_text[:200]}\n```"
+
+                # Make replacement
+                new_content = current_content.replace(find_text, replace_text, 1)
+
+                # Commit
+                r = await client.put(
+                    f"https://api.github.com/repos/{full_repo}/contents/{path}",
+                    headers={
+                        "Authorization": f"token {self.github_token}",
+                        "Accept": "application/vnd.github.v3+json"
+                    },
+                    json={
+                        "message": commit_message,
+                        "content": base64.b64encode(new_content.encode()).decode(),
+                        "sha": sha
+                    }
+                )
+
+                if r.status_code in [200, 201]:
+                    return (
+                        f"FILE UPDATED!\n\n"
+                        f"Repo: {full_repo}\n"
+                        f"File: {path}\n"
+                        f"Commit: {commit_message}\n\n"
+                        f"Railway will auto-deploy in ~2 minutes."
+                    )
+                return f"Commit failed: {r.status_code} - {r.text[:200]}"
+
+        except Exception as e:
+            return f"Error editing file: {e}"
+
+    async def _tool_list_files(self, repo: str, path: str = '') -> str:
+        """List files in GitHub repo"""
+        try:
+            full_repo = f"{self.github_owner}/{repo}" if '/' not in repo else repo
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                url = f"https://api.github.com/repos/{full_repo}/contents/{path}"
+                r = await client.get(
+                    url,
+                    headers={
+                        "Authorization": f"token {self.github_token}",
+                        "Accept": "application/vnd.github.v3+json"
+                    }
+                )
+
+                if r.status_code != 200:
+                    return f"Error: {r.status_code}"
+
+                data = r.json()
+
+                if not isinstance(data, list):
+                    data = [data]
+
+                files = []
+                for f in data:
+                    icon = "📁" if f['type'] == 'dir' else "📄"
+                    files.append(f"{icon} {f['name']}")
+
+                return f"Files in {repo}/{path or 'root'}:\n" + "\n".join(files)
+
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _tool_search_code(self, repo: str, query: str) -> str:
+        """Search code in GitHub repo"""
+        try:
+            full_repo = f"{self.github_owner}/{repo}" if '/' not in repo else repo
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(
+                    f"https://api.github.com/search/code",
+                    params={
+                        "q": f"{query} repo:{full_repo}"
+                    },
+                    headers={
+                        "Authorization": f"token {self.github_token}",
+                        "Accept": "application/vnd.github.v3+json"
+                    }
+                )
+
+                data = r.json()
+                items = data.get('items', [])
+
+                if not items:
+                    return f"No results for '{query}' in {repo}"
+
+                results = [f"Found {len(items)} matches for '{query}':\n"]
+                for item in items[:10]:
+                    results.append(f"- {item['path']}")
+
+                return "\n".join(results)
+
+        except Exception as e:
+            return f"Error: {e}"
+
+    # ==================== RAILWAY TOOLS ====================
+
+    async def _tool_railway_logs(self, project: str, lines: int = 50) -> str:
+        """Get Railway logs - simplified version using health/status endpoints"""
+        try:
+            if project == 'omni-agent':
+                url = self.omni_agent_url
+            else:
+                return "Only omni-agent logs available currently"
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                # Get health
+                r = await client.get(f"{url}/health")
+                health = r.json() if r.status_code == 200 else {"status": "error"}
+
+                # Get recent tasks as "logs"
+                r2 = await client.get(f"{url}/api/tasks")
+                tasks = r2.json() if r2.status_code == 200 else {}
+
+                # Get scheduler logs
+                r3 = await client.get(f"{url}/api/scheduler/logs?limit=10")
+                scheduler = r3.json() if r3.status_code == 200 else {}
+
+                msg = f"=== {project.upper()} STATUS ===\n\n"
+                msg += f"Health: {health.get('status', 'unknown')}\n\n"
+
+                if isinstance(tasks, dict):
+                    msg += f"Tasks: {tasks.get('count', 0)} total\n"
+
+                logs = scheduler.get('logs', []) if isinstance(scheduler, dict) else []
+                if logs:
+                    msg += "\nRecent activity:\n"
+                    for log in logs[:5]:
+                        msg += f"- {log.get('animal', '?')}: {log.get('status', '?')}\n"
+
+                return msg
+
+        except Exception as e:
+            return f"Error getting logs: {e}"
+
+    # ==================== MEDIA TOOLS ====================
+
+    async def _tool_send_video(self, video_url: str, caption: str = '') -> str:
+        """Queue a video to be sent in chat"""
+        if not video_url:
+            return "No video URL provided"
+
+        self.pending_media = {
+            "url": video_url,
+            "caption": caption or "Video"
+        }
+        return f"Video queued for sending: {video_url[:50]}..."

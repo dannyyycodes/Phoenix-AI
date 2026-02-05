@@ -13,6 +13,8 @@ load_dotenv()
 import json
 import asyncio
 import logging
+import tempfile
+import httpx
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -244,22 +246,74 @@ class PhoenixBot:
         await update.message.chat.send_action("typing")
 
         try:
-            # Process with AI brain - now returns final response directly
-            response = await self.brain.think(user_id, message)
+            # Process with AI brain - returns Dict with 'response' and optional 'video'
+            result = await self.brain.think(user_id, message)
+
+            # Extract response text
+            response_text = result.get('response', 'Done.') if isinstance(result, dict) else str(result)
 
             # Send response (split if too long)
-            if len(response) > 4000:
-                chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+            if len(response_text) > 4000:
+                chunks = [response_text[i:i+4000] for i in range(0, len(response_text), 4000)]
                 for chunk in chunks:
                     await update.message.reply_text(chunk)
             else:
-                await update.message.reply_text(response)
+                await update.message.reply_text(response_text)
+
+            # Check if there's a video to send
+            if isinstance(result, dict) and result.get('video'):
+                video_info = result['video']
+                await self._send_video(update, video_info)
 
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
             await update.message.reply_text(
                 f"Sorry, I encountered an error: {str(e)[:200]}\n\n"
                 "Please try again or rephrase your request."
+            )
+
+    async def _send_video(self, update: Update, video_info: Dict):
+        """Download and send video to chat"""
+        video_url = video_info.get('url', '')
+        caption = video_info.get('caption', '')
+
+        if not video_url:
+            return
+
+        try:
+            await update.message.chat.send_action("upload_video")
+
+            # Download video to temp file
+            async with httpx.AsyncClient(timeout=120) as client:
+                response = await client.get(video_url)
+
+                if response.status_code != 200:
+                    await update.message.reply_text(f"Could not download video: {response.status_code}")
+                    return
+
+                # Write to temp file
+                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+                    f.write(response.content)
+                    temp_path = f.name
+
+            # Send video
+            with open(temp_path, 'rb') as video_file:
+                await update.message.reply_video(
+                    video=video_file,
+                    caption=caption[:1024] if caption else None,
+                    supports_streaming=True
+                )
+
+            # Clean up temp file
+            import os
+            os.unlink(temp_path)
+
+            logger.info(f"Video sent successfully: {video_url[:50]}...")
+
+        except Exception as e:
+            logger.error(f"Error sending video: {e}")
+            await update.message.reply_text(
+                f"Video ready but couldn't send: {str(e)[:100]}\n\nURL: {video_url}"
             )
 
     async def _request_approval(self, update: Update, user_id: str,
