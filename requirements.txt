@@ -1,4 +1,4 @@
-# Telegram Bot
+# Telegram Bot (includes httpx as dependency)
 python-telegram-bot[all]==21.0.1
 
 # Database
@@ -8,11 +8,5 @@ psycopg2-binary==2.9.9
 # GitHub Integration
 PyGithub==2.2.0
 
-# HTTP Requests
-httpx==0.26.0
-
 # Environment
 python-dotenv==1.0.0
-
-# ASGI/WSGI (for potential webhook mode)
-aiohttp==3.9.1
